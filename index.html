@@ -1,0 +1,899 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>狙擊鏡視角模擬器</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Noto Sans TC', 'Microsoft JhengHei', sans-serif;
+    background: #1a1a2e;
+    color: #e0e0e0;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px 16px;
+  }
+
+  h1 {
+    font-size: 22px;
+    font-weight: 700;
+    color: #f0f0f0;
+    margin-bottom: 6px;
+    letter-spacing: 1px;
+    text-align: center;
+  }
+
+  .subtitle {
+    font-size: 13px;
+    color: #888;
+    margin-bottom: 24px;
+    text-align: center;
+  }
+
+  /* --- 按鈕列 --- */
+  .btn-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    justify-content: center;
+    margin-bottom: 28px;
+  }
+
+  .mode-btn {
+    padding: 10px 18px;
+    border: 2px solid #444;
+    border-radius: 8px;
+    background: #252538;
+    color: #ccc;
+    font-size: 14px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+  }
+  .mode-btn:hover { border-color: #888; color: #fff; }
+  .mode-btn.active {
+    border-color: #7eb8f7;
+    background: #1a3050;
+    color: #7eb8f7;
+    font-weight: 700;
+  }
+
+  /* --- 場景容器 --- */
+  .scene-wrapper {
+    position: relative;
+    width: 100%;
+    max-width: 680px;
+    border-radius: 12px;
+    overflow: hidden;
+    border: 2px solid #333;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.6);
+  }
+
+  canvas {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  /* --- 說明卡 --- */
+  .info-card {
+    margin-top: 20px;
+    width: 100%;
+    max-width: 680px;
+    background: #1e1e30;
+    border: 1px solid #333;
+    border-radius: 10px;
+    padding: 16px 20px;
+  }
+
+  .info-card .mode-label {
+    font-size: 15px;
+    font-weight: 700;
+    color: #f0f0f0;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .info-card .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+
+  .info-card p {
+    font-size: 13.5px;
+    line-height: 1.8;
+    color: #aaa;
+  }
+
+  .info-card p strong {
+    color: #ddd;
+  }
+
+  /* 警告標籤 */
+  .badge {
+    display: inline-block;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    margin-left: 8px;
+    font-weight: 600;
+    vertical-align: middle;
+  }
+</style>
+</head>
+<body>
+
+<h1>🔭 狙擊鏡視角模擬器</h1>
+<p class="subtitle">選擇不同模式，觀察同一場景在各種光學設備下的視覺差異</p>
+
+<div class="btn-row">
+  <button class="mode-btn active" onclick="setMode(0)">① 裸眼視角</button>
+  <button class="mode-btn" onclick="setMode(1)">② 傳統光學狙擊鏡</button>
+  <button class="mode-btn" onclick="setMode(2)">③ 主動式紅外線夜視鏡</button>
+  <button class="mode-btn" onclick="setMode(3)">④ 熱像儀狙擊鏡</button>
+</div>
+
+<div class="scene-wrapper">
+  <canvas id="c" width="680" height="420"></canvas>
+</div>
+
+<div class="info-card" id="infoCard">
+  <div class="mode-label">
+    <span class="dot" style="background:#7eb8f7"></span>
+    <span id="infoTitle">① 裸眼視角（未開鏡前）</span>
+  </div>
+  <p id="infoText"></p>
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const W = 680, H = 420;
+
+let currentMode = 0;
+let animFrame;
+let time = 0;
+
+// ──────────────────────────────────────────────
+// 場景幾何資料
+// ──────────────────────────────────────────────
+const scene = {
+  sky:    { y: 0,   h: 160 },
+  ground: { y: 280, h: 140 },
+  hill1:  { cx: 100, cy: 310, rx: 200, ry: 80 },
+  hill2:  { cx: 580, cy: 320, rx: 180, ry: 70 },
+
+  // 樹木群 [x底部中心, 高, 寬]
+  trees: [
+    [60,  80, 30], [130, 95, 34], [210, 70, 26],
+    [580, 85, 30], [630, 78, 28], [500, 65, 24],
+  ],
+
+  // 假人 (三角形軀幹 + 圓頭) — 中央偏右
+  dummy: {
+    x: 340, // 頭部中心 X
+    headY: 210, headR: 18,
+    shoulderY: 230, shoulderW: 36,
+    bodyH: 70,
+    legW: 14,
+  },
+
+  // 地面雜草 [x, y, w, h]
+  grass: generateGrass(),
+};
+
+function generateGrass() {
+  const arr = [];
+  for (let i = 0; i < 60; i++) {
+    arr.push([Math.random() * 680, 276 + Math.random() * 30, 3 + Math.random() * 6, 8 + Math.random() * 14]);
+  }
+  return arr;
+}
+
+// ──────────────────────────────────────────────
+// 顏色主題
+// ──────────────────────────────────────────────
+const themes = {
+  normal: {
+    sky:        '#87CEEB',
+    skyHorizon: '#b8dff5',
+    ground:     '#7a9e50',
+    groundDark: '#5a7a38',
+    hill:       '#6a9a40',
+    hillDark:   '#4a7a28',
+    treeTrunk:  '#6b3e1f',
+    treeLeaf:   '#3a7d20',
+    treeLeafDk: '#2a5d14',
+    grassBlade: '#4a8a2a',
+    dummyBody:  '#a07850',
+    dummyFace:  '#c8a07a',
+    dummyCloth: '#8a6840',
+    dummyHead:  '#b89060',
+    dummyGun:   '#555',
+    sunColor:   '#fff5a0',
+    cloud:      'rgba(255,255,255,0.85)',
+  },
+};
+
+// ──────────────────────────────────────────────
+// 通用場景繪製（裸眼）
+// ──────────────────────────────────────────────
+function drawNormal(scope) {
+  const t = themes.normal;
+
+  // 天空漸層
+  const skyGrad = ctx.createLinearGradient(0, 0, 0, scene.sky.h);
+  skyGrad.addColorStop(0, '#5aa8d8');
+  skyGrad.addColorStop(1, t.skyHorizon);
+  ctx.fillStyle = skyGrad;
+  ctx.fillRect(0, 0, W, scene.sky.h + 30);
+
+  // 太陽
+  if (!scope) {
+    ctx.beginPath();
+    ctx.arc(80, 55, 28, 0, Math.PI * 2);
+    ctx.fillStyle = t.sunColor;
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,230,80,0.5)';
+    ctx.lineWidth = 12;
+    ctx.stroke();
+  }
+
+  // 雲朵
+  if (!scope) {
+    drawCloud(200, 70, 1.0);
+    drawCloud(480, 55, 0.85);
+  }
+
+  // 地面
+  const gndGrad = ctx.createLinearGradient(0, scene.ground.y, 0, H);
+  gndGrad.addColorStop(0, t.ground);
+  gndGrad.addColorStop(1, t.groundDark);
+  ctx.fillStyle = gndGrad;
+  ctx.fillRect(0, scene.ground.y, W, H - scene.ground.y);
+
+  // 山丘
+  drawHill(scene.hill1.cx, scene.hill1.cy, scene.hill1.rx, scene.hill1.ry, t.hill, t.hillDark);
+  drawHill(scene.hill2.cx, scene.hill2.cy, scene.hill2.rx, scene.hill2.ry, t.hill, t.hillDark);
+
+  // 地面雜草
+  scene.grass.forEach(([x, y, w, h]) => {
+    ctx.fillStyle = t.grassBlade;
+    ctx.fillRect(x, y, w, h);
+  });
+
+  // 樹木
+  scene.trees.forEach(([x, baseY, hw]) => {
+    drawTree(x, baseY, hw, t);
+  });
+
+  // 假人
+  drawDummy(t.dummyBody, t.dummyFace, t.dummyCloth, t.dummyHead, t.dummyGun);
+
+  // 地平線過渡
+  const horizGrad = ctx.createLinearGradient(0, 255, 0, 290);
+  horizGrad.addColorStop(0, 'rgba(130,185,100,0)');
+  horizGrad.addColorStop(1, 'rgba(90,140,60,0.5)');
+  ctx.fillStyle = horizGrad;
+  ctx.fillRect(0, 255, W, 35);
+}
+
+function drawCloud(cx, cy, scale) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.scale(scale, scale);
+  ctx.fillStyle = themes.normal.cloud;
+  for (const [ox, oy, r] of [[0,0,22],[25,-10,18],[-25,-8,16],[48,0,15],[-45,5,14],[0,-18,14]]) {
+    ctx.beginPath(); ctx.arc(ox, oy, r, 0, Math.PI*2); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawHill(cx, cy, rx, ry, fill, dark) {
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, rx, ry, 0, Math.PI, 0);
+  const hg = ctx.createLinearGradient(cx-rx, cy-ry, cx+rx, cy);
+  hg.addColorStop(0, fill); hg.addColorStop(1, dark);
+  ctx.fillStyle = hg;
+  ctx.fill();
+}
+
+function drawTree(x, baseY, hw, t) {
+  // 樹幹
+  ctx.fillStyle = t.treeTrunk;
+  ctx.fillRect(x - 4, baseY - 35, 8, 35);
+  // 樹冠（三層）
+  for (let i = 0; i < 3; i++) {
+    ctx.beginPath();
+    const ty = baseY - 40 - i * 22;
+    ctx.moveTo(x, ty - hw * (1 + i * 0.15));
+    ctx.lineTo(x + hw * (1.3 - i * 0.2), ty + 10);
+    ctx.lineTo(x - hw * (1.3 - i * 0.2), ty + 10);
+    ctx.closePath();
+    ctx.fillStyle = i === 1 ? t.treeLeafDk : t.treeLeaf;
+    ctx.fill();
+  }
+}
+
+function drawDummy(bodyCol, faceCol, clothCol, headCol, gunCol) {
+  const d = scene.dummy;
+  ctx.save();
+
+  // 陰影
+  ctx.beginPath();
+  ctx.ellipse(d.x, d.headY + d.bodyH + 8, 22, 6, 0, 0, Math.PI*2);
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  ctx.fill();
+
+  // 腿部
+  ctx.fillStyle = clothCol;
+  ctx.fillRect(d.x - d.legW - 2, d.headY + d.bodyH - 10, d.legW, 22);
+  ctx.fillRect(d.x + 2, d.headY + d.bodyH - 10, d.legW, 22);
+
+  // 軀幹
+  ctx.fillStyle = clothCol;
+  ctx.beginPath();
+  ctx.roundRect(d.x - d.shoulderW/2, d.shoulderY, d.shoulderW, d.bodyH - 12, 4);
+  ctx.fill();
+
+  // 腰帶
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.fillRect(d.x - d.shoulderW/2, d.shoulderY + d.bodyH - 25, d.shoulderW, 5);
+
+  // 手臂
+  ctx.fillStyle = bodyCol;
+  ctx.fillRect(d.x - d.shoulderW/2 - 10, d.shoulderY + 5, 10, 32);
+  ctx.fillRect(d.x + d.shoulderW/2, d.shoulderY + 5, 10, 32);
+
+  // 頭部
+  ctx.beginPath();
+  ctx.arc(d.x, d.headY, d.headR, 0, Math.PI * 2);
+  ctx.fillStyle = headCol;
+  ctx.fill();
+
+  // 臉部
+  ctx.beginPath();
+  ctx.arc(d.x + 4, d.headY + 2, d.headR * 0.65, 0, Math.PI * 2);
+  ctx.fillStyle = faceCol;
+  ctx.fill();
+
+  // 眼睛（小點）
+  ctx.fillStyle = '#333';
+  ctx.beginPath(); ctx.arc(d.x + 2, d.headY - 2, 2, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(d.x + 9, d.headY - 2, 2, 0, Math.PI*2); ctx.fill();
+
+  // 槍枝（示意）
+  ctx.strokeStyle = gunCol;
+  ctx.lineWidth = 4;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(d.x + d.shoulderW/2 + 8, d.shoulderY + 20);
+  ctx.lineTo(d.x + d.shoulderW/2 + 38, d.shoulderY + 14);
+  ctx.stroke();
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(d.x + d.shoulderW/2 + 38, d.shoulderY + 14);
+  ctx.lineTo(d.x + d.shoulderW/2 + 55, d.shoulderY + 12);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+// ──────────────────────────────────────────────
+// 模式 0：裸眼
+// ──────────────────────────────────────────────
+function drawMode0() {
+  drawNormal(false);
+  // 簡單 HUD 邊框
+  ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(1, 1, W-2, H-2);
+}
+
+// ──────────────────────────────────────────────
+// 模式 1：傳統光學狙擊鏡
+// ──────────────────────────────────────────────
+function drawMode1() {
+  // 先畫完整場景（背景/邊緣）
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, W, H);
+
+  // 圓形鏡框
+  const cx = W/2, cy = H/2, r = 190;
+
+  // 剪裁圓形放大視野
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.clip();
+
+  // 放大效果：在剪裁區內以縮放繪製場景
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.scale(1.85, 1.85);
+  ctx.translate(-cx, -cy);
+  // 略微平移聚焦假人
+  ctx.translate(-20, 10);
+  drawNormal(true);
+  ctx.restore();
+
+  // 瞄準線（十字）
+  ctx.strokeStyle = 'rgba(0,0,0,0.75)';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  ctx.moveTo(cx - r, cy); ctx.lineTo(cx + r, cy);
+  ctx.moveTo(cx, cy - r); ctx.lineTo(cx, cy + r);
+  ctx.stroke();
+
+  // 水平刻度線
+  ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+  ctx.lineWidth = 1;
+  for (let i = -5; i <= 5; i++) {
+    if (i === 0) continue;
+    const lx = cx + i * 26;
+    const len = (i % 5 === 0) ? 12 : 6;
+    ctx.beginPath();
+    ctx.moveTo(lx, cy - len);
+    ctx.lineTo(lx, cy + len);
+    ctx.stroke();
+  }
+  for (let i = -5; i <= 5; i++) {
+    if (i === 0) continue;
+    const ly = cy + i * 26;
+    const len = (i % 5 === 0) ? 12 : 6;
+    ctx.beginPath();
+    ctx.moveTo(cx - len, ly);
+    ctx.lineTo(cx + len, ly);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+
+  // 圓形邊框
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.strokeStyle = '#2a2a2a';
+  ctx.lineWidth = 6;
+  ctx.stroke();
+
+  // 外部漸黑
+  const radGrad = ctx.createRadialGradient(cx, cy, r - 2, cx, cy, r + 60);
+  radGrad.addColorStop(0, 'rgba(0,0,0,0)');
+  radGrad.addColorStop(1, 'rgba(0,0,0,1)');
+  ctx.fillStyle = radGrad;
+  ctx.beginPath();
+  ctx.rect(0, 0, W, H);
+  ctx.arc(cx, cy, r, 0, Math.PI * 2, true);
+  ctx.fill();
+
+  // 鏡片光澤
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.clip();
+  const glossGrad = ctx.createRadialGradient(cx - 60, cy - 70, 10, cx, cy, r);
+  glossGrad.addColorStop(0, 'rgba(255,255,255,0.06)');
+  glossGrad.addColorStop(0.4, 'rgba(255,255,255,0)');
+  ctx.fillStyle = glossGrad;
+  ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+
+  // 放大倍率標示
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  ctx.font = '13px monospace';
+  ctx.fillText('10× ZOOM', cx - 40, cy + r - 18);
+}
+
+// ──────────────────────────────────────────────
+// 工具：將像素轉為夜視綠
+// ──────────────────────────────────────────────
+function applyNVG(imageData) {
+  const d = imageData.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const lum = 0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2];
+    // 夜視：亮度映射到綠色通道，加入雜訊
+    const noise = (Math.random() - 0.5) * 18;
+    const g = Math.min(255, Math.max(0, lum * 0.95 + noise + 15));
+    d[i]   = g * 0.08;
+    d[i+1] = g;
+    d[i+2] = g * 0.12;
+  }
+  return imageData;
+}
+
+// ──────────────────────────────────────────────
+// 模式 2：主動式紅外線夜視鏡
+// ──────────────────────────────────────────────
+function drawMode2() {
+  // 先在 offscreen 畫正常場景
+  const off = document.createElement('canvas');
+  off.width = W; off.height = H;
+  const octx = off.getContext('2d');
+
+  // 模擬夜間：稍暗的場景
+  const tc = themes.normal;
+  octx.fillStyle = '#1a2a10';
+  octx.fillRect(0, 0, W, H);
+
+  // 在離屏畫場景（無太陽雲）
+  const origCtx = ctx;
+  // 切換到 octx 繪製
+  const saved = ctx;
+
+  // 用臨時 canvas 繪製
+  const tmpCanvas = document.createElement('canvas');
+  tmpCanvas.width = W; tmpCanvas.height = H;
+  const tmpCtx = tmpCanvas.getContext('2d');
+
+  // 重新在 tmpCtx 畫場景
+  drawSceneOnCtx(tmpCtx, false);
+
+  // 套用夜視濾鏡
+  const imgData = tmpCtx.getImageData(0, 0, W, H);
+  applyNVG(imgData);
+  tmpCtx.putImageData(imgData, 0, 0);
+
+  // 再加一層掃描線
+  for (let y = 0; y < H; y += 2) {
+    tmpCtx.fillStyle = 'rgba(0,30,0,0.18)';
+    tmpCtx.fillRect(0, y, W, 1);
+  }
+
+  // 暈邊效果
+  const vign = tmpCtx.createRadialGradient(W/2, H/2, H*0.35, W/2, H/2, H*0.75);
+  vign.addColorStop(0, 'rgba(0,0,0,0)');
+  vign.addColorStop(1, 'rgba(0,8,0,0.75)');
+  tmpCtx.fillStyle = vign;
+  tmpCtx.fillRect(0, 0, W, H);
+
+  // 閃爍（輕微）
+  if (time % 60 < 2) {
+    tmpCtx.fillStyle = 'rgba(0,255,0,0.03)';
+    tmpCtx.fillRect(0, 0, W, H);
+  }
+
+  ctx.drawImage(tmpCanvas, 0, 0);
+
+  // HUD 邊框
+  ctx.strokeStyle = 'rgba(0,255,80,0.35)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(8, 8, W-16, H-16);
+
+  // 角標記
+  const c = [[20,20],[W-20,20],[20,H-20],[W-20,H-20]];
+  const dirs = [[1,1],[-1,1],[1,-1],[-1,-1]];
+  ctx.strokeStyle = 'rgba(0,255,80,0.7)';
+  ctx.lineWidth = 2;
+  c.forEach(([x, y], i) => {
+    const [dx, dy] = dirs[i];
+    ctx.beginPath();
+    ctx.moveTo(x, y + dy * 12); ctx.lineTo(x, y); ctx.lineTo(x + dx * 12, y);
+    ctx.stroke();
+  });
+
+  // 模式標示
+  ctx.fillStyle = 'rgba(0,255,80,0.85)';
+  ctx.font = '12px monospace';
+  ctx.fillText('IR-NVG  ON', 16, H - 18);
+  ctx.fillText(`${new Date().toTimeString().slice(0,5)}`, W - 65, H - 18);
+}
+
+// ──────────────────────────────────────────────
+// 通用：在指定 context 上畫場景
+// ──────────────────────────────────────────────
+function drawSceneOnCtx(tctx, withSunCloud) {
+  const t = themes.normal;
+
+  const skyGrad = tctx.createLinearGradient(0, 0, 0, 180);
+  skyGrad.addColorStop(0, '#5aa8d8');
+  skyGrad.addColorStop(1, '#b8dff5');
+  tctx.fillStyle = skyGrad;
+  tctx.fillRect(0, 0, W, 200);
+
+  if (withSunCloud) {
+    tctx.beginPath(); tctx.arc(80, 55, 28, 0, Math.PI*2);
+    tctx.fillStyle = '#fff5a0'; tctx.fill();
+  }
+
+  // 地面
+  tctx.fillStyle = t.ground;
+  tctx.fillRect(0, 280, W, H - 280);
+
+  // 山丘
+  tctx.beginPath();
+  tctx.ellipse(100, 310, 200, 80, 0, Math.PI, 0);
+  tctx.fillStyle = t.hill; tctx.fill();
+  tctx.beginPath();
+  tctx.ellipse(580, 320, 180, 70, 0, Math.PI, 0);
+  tctx.fillStyle = t.hill; tctx.fill();
+
+  // 雜草
+  scene.grass.forEach(([x, y, w, h]) => {
+    tctx.fillStyle = t.grassBlade;
+    tctx.fillRect(x, y, w, h);
+  });
+
+  // 樹木
+  scene.trees.forEach(([x, baseY, hw]) => {
+    tctx.fillStyle = t.treeTrunk;
+    tctx.fillRect(x - 4, baseY - 35, 8, 35);
+    for (let i = 0; i < 3; i++) {
+      tctx.beginPath();
+      const ty = baseY - 40 - i * 22;
+      tctx.moveTo(x, ty - hw * (1 + i * 0.15));
+      tctx.lineTo(x + hw * (1.3 - i * 0.2), ty + 10);
+      tctx.lineTo(x - hw * (1.3 - i * 0.2), ty + 10);
+      tctx.closePath();
+      tctx.fillStyle = i === 1 ? t.treeLeafDk : t.treeLeaf;
+      tctx.fill();
+    }
+  });
+
+  // 假人（在 tctx 上畫）
+  const d = scene.dummy;
+  // 陰影
+  tctx.beginPath();
+  tctx.ellipse(d.x, d.headY + d.bodyH + 8, 22, 6, 0, 0, Math.PI*2);
+  tctx.fillStyle = 'rgba(0,0,0,0.25)'; tctx.fill();
+
+  tctx.fillStyle = t.dummyCloth;
+  tctx.fillRect(d.x - d.legW - 2, d.headY + d.bodyH - 10, d.legW, 22);
+  tctx.fillRect(d.x + 2, d.headY + d.bodyH - 10, d.legW, 22);
+
+  tctx.fillStyle = t.dummyCloth;
+  tctx.beginPath();
+  if (tctx.roundRect) {
+    tctx.roundRect(d.x - d.shoulderW/2, d.shoulderY, d.shoulderW, d.bodyH - 12, 4);
+  } else {
+    tctx.rect(d.x - d.shoulderW/2, d.shoulderY, d.shoulderW, d.bodyH - 12);
+  }
+  tctx.fill();
+
+  tctx.fillStyle = t.dummyBody;
+  tctx.fillRect(d.x - d.shoulderW/2 - 10, d.shoulderY + 5, 10, 32);
+  tctx.fillRect(d.x + d.shoulderW/2, d.shoulderY + 5, 10, 32);
+
+  tctx.beginPath();
+  tctx.arc(d.x, d.headY, d.headR, 0, Math.PI*2);
+  tctx.fillStyle = t.dummyHead; tctx.fill();
+
+  tctx.beginPath();
+  tctx.arc(d.x + 4, d.headY + 2, d.headR * 0.65, 0, Math.PI*2);
+  tctx.fillStyle = t.dummyFace; tctx.fill();
+
+  tctx.strokeStyle = '#555';
+  tctx.lineWidth = 4;
+  tctx.beginPath();
+  tctx.moveTo(d.x + d.shoulderW/2 + 8, d.shoulderY + 20);
+  tctx.lineTo(d.x + d.shoulderW/2 + 55, d.shoulderY + 12);
+  tctx.stroke();
+}
+
+// ──────────────────────────────────────────────
+// 模式 3：熱像儀
+// ──────────────────────────────────────────────
+function drawMode3() {
+  // 整體灰霧背景
+  ctx.fillStyle = '#3a3a3a';
+  ctx.fillRect(0, 0, W, H);
+
+  // 天空 - 略有變化的灰
+  const skyGrad = ctx.createLinearGradient(0, 0, 0, 200);
+  skyGrad.addColorStop(0, '#454545');
+  skyGrad.addColorStop(1, '#383838');
+  ctx.fillStyle = skyGrad;
+  ctx.fillRect(0, 0, W, 200);
+
+  // 地面 - 稍深灰
+  ctx.fillStyle = '#2e2e2e';
+  ctx.fillRect(0, 280, W, H - 280);
+
+  // 山丘 - 中灰
+  ctx.fillStyle = '#353535';
+  ctx.beginPath();
+  ctx.ellipse(100, 310, 200, 80, 0, Math.PI, 0);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(580, 320, 180, 70, 0, Math.PI, 0);
+  ctx.fill();
+
+  // 樹木 - 深灰（冷物體）
+  scene.trees.forEach(([x, baseY, hw]) => {
+    ctx.fillStyle = '#252525';
+    ctx.fillRect(x - 4, baseY - 35, 8, 35);
+    for (let i = 0; i < 3; i++) {
+      ctx.beginPath();
+      const ty = baseY - 40 - i * 22;
+      ctx.moveTo(x, ty - hw * (1 + i * 0.15));
+      ctx.lineTo(x + hw * (1.3 - i * 0.2), ty + 10);
+      ctx.lineTo(x - hw * (1.3 - i * 0.2), ty + 10);
+      ctx.closePath();
+      ctx.fillStyle = '#272727';
+      ctx.fill();
+    }
+  });
+
+  // 雜草 - 近乎黑
+  scene.grass.forEach(([x, y, w, h]) => {
+    ctx.fillStyle = '#2a2a2a';
+    ctx.fillRect(x, y, w, h);
+  });
+
+  // 熱噪點（地面熱輻射）
+  for (let i = 0; i < 300; i++) {
+    const nx = Math.random() * W;
+    const ny = 260 + Math.random() * (H - 260);
+    const nb = 38 + Math.random() * 20;
+    ctx.fillStyle = `rgb(${nb},${nb},${nb})`;
+    ctx.fillRect(nx, ny, 2, 2);
+  }
+
+  // 假人 — 亮白熱源
+  const d = scene.dummy;
+
+  // 熱輝光（外圈光暈）
+  const haloGrad = ctx.createRadialGradient(d.x, d.headY + 50, 5, d.x, d.headY + 50, 75);
+  haloGrad.addColorStop(0, 'rgba(255,255,220,0.35)');
+  haloGrad.addColorStop(0.5, 'rgba(255,220,180,0.12)');
+  haloGrad.addColorStop(1, 'rgba(255,200,150,0)');
+  ctx.fillStyle = haloGrad;
+  ctx.beginPath();
+  ctx.ellipse(d.x, d.headY + 50, 75, 100, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  // 腿部（溫度略低，偏灰白）
+  ctx.fillStyle = '#d0d0d0';
+  ctx.fillRect(d.x - d.legW - 2, d.headY + d.bodyH - 10, d.legW, 22);
+  ctx.fillRect(d.x + 2, d.headY + d.bodyH - 10, d.legW, 22);
+
+  // 軀幹（核心熱，最亮）
+  ctx.fillStyle = '#f5f5f5';
+  ctx.beginPath();
+  if (ctx.roundRect) {
+    ctx.roundRect(d.x - d.shoulderW/2, d.shoulderY, d.shoulderW, d.bodyH - 12, 4);
+  } else {
+    ctx.rect(d.x - d.shoulderW/2, d.shoulderY, d.shoulderW, d.bodyH - 12);
+  }
+  ctx.fill();
+
+  // 手臂
+  ctx.fillStyle = '#e8e8e8';
+  ctx.fillRect(d.x - d.shoulderW/2 - 10, d.shoulderY + 5, 10, 32);
+  ctx.fillRect(d.x + d.shoulderW/2, d.shoulderY + 5, 10, 32);
+
+  // 頭部（最熱）
+  ctx.beginPath();
+  ctx.arc(d.x, d.headY, d.headR, 0, Math.PI*2);
+  ctx.fillStyle = '#ffffff';
+  ctx.fill();
+
+  // 臉部熱點
+  ctx.beginPath();
+  ctx.arc(d.x + 4, d.headY + 2, d.headR * 0.6, 0, Math.PI*2);
+  const faceHeat = ctx.createRadialGradient(d.x + 4, d.headY, 0, d.x + 4, d.headY + 2, d.headR * 0.6);
+  faceHeat.addColorStop(0, '#ffffff');
+  faceHeat.addColorStop(0.6, '#f0f0f0');
+  faceHeat.addColorStop(1, '#d5d5d5');
+  ctx.fillStyle = faceHeat;
+  ctx.fill();
+
+  // 槍枝（冷，幾乎不可見）
+  ctx.strokeStyle = '#404040';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(d.x + d.shoulderW/2 + 8, d.shoulderY + 20);
+  ctx.lineTo(d.x + d.shoulderW/2 + 55, d.shoulderY + 12);
+  ctx.stroke();
+
+  // 整體灰霧濾鏡（半透明灰層）
+  ctx.fillStyle = 'rgba(60,60,60,0.10)';
+  ctx.fillRect(0, 0, W, H);
+
+  // 掃描線
+  for (let y = 0; y < H; y += 3) {
+    ctx.fillStyle = 'rgba(0,0,0,0.08)';
+    ctx.fillRect(0, y, W, 1);
+  }
+
+  // 暈邊
+  const thVign = ctx.createRadialGradient(W/2, H/2, H * 0.3, W/2, H/2, H * 0.75);
+  thVign.addColorStop(0, 'rgba(0,0,0,0)');
+  thVign.addColorStop(1, 'rgba(0,0,0,0.65)');
+  ctx.fillStyle = thVign;
+  ctx.fillRect(0, 0, W, H);
+
+  // HUD 邊框
+  ctx.strokeStyle = 'rgba(200,200,200,0.3)';
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(8, 8, W-16, H-16);
+
+  // 標示
+  ctx.fillStyle = 'rgba(220,220,220,0.7)';
+  ctx.font = '12px monospace';
+  ctx.fillText('THERMAL  25Hz', 16, H - 18);
+  ctx.fillText('HUMAN DETECTED', W - 120, H - 18);
+
+  // 目標框（假人周圍）
+  ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([6, 4]);
+  ctx.strokeRect(d.x - 42, d.headY - d.headR - 5, 84, d.bodyH + d.headR + 30);
+  ctx.setLineDash([]);
+}
+
+// ──────────────────────────────────────────────
+// 主繪製入口
+// ──────────────────────────────────────────────
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  switch(currentMode) {
+    case 0: drawMode0(); break;
+    case 1: drawMode1(); break;
+    case 2: drawMode2(); break;
+    case 3: drawMode3(); break;
+  }
+  time++;
+  animFrame = requestAnimationFrame(draw);
+}
+
+// ──────────────────────────────────────────────
+// 說明文字
+// ──────────────────────────────────────────────
+const infoData = [
+  {
+    title: '① 裸眼視角（未開鏡前）',
+    dot: '#7eb8f7',
+    text: `<strong>狀態：</strong>未使用任何光學輔助設備。<br>
+           <strong>色彩：</strong>所有物景呈現自然真實的顏色——藍天、綠地、褐色假人，一切如眼睛所見。<br>
+           <strong>特點：</strong>視野最廣，但遠距離目標難以辨識，缺乏細節放大能力。`
+  },
+  {
+    title: '② 傳統光學狙擊鏡',
+    dot: '#a8d8a8',
+    text: `<strong>狀態：</strong>使用純光學透鏡系統（本例示意 10 倍放大）。<br>
+           <strong>色彩：</strong>畫面仍為<strong>正常自然色彩</strong>，沒有任何濾色效果；僅因放大而使細節更清晰。<br>
+           <strong>特點：</strong>視野縮小呈圓形，中央有瞄準用十字刻度（密位刻度），畫面四周黑暗。適用於白天或光線充足的環境。`
+  },
+  {
+    title: '③ 主動式紅外線夜視鏡',
+    dot: '#4aff88',
+    text: `<strong>狀態：</strong>開啟紅外線主動照明，感測器將紅外光轉為可見影像。<br>
+           <strong>色彩：</strong>整體畫面呈現<strong>明暗不同的綠色</strong>——亮處為較亮的綠，暗處為深綠，以此區分場景的明暗輪廓。假人與物景同樣都是綠色，但亮度不同，可辨認出假人輪廓。<br>
+           <strong>特點：</strong>適用於低光或夜間環境。畫面有輕微掃描線與雜訊，為感測器特性。`
+  },
+  {
+    title: '④ 熱像儀狙擊鏡',
+    dot: '#f5f5f5',
+    text: `<strong>狀態：</strong>感測器偵測物體發出的熱輻射（紅外熱能），溫度越高越亮。<br>
+           <strong>色彩：</strong>整體背景為<strong>灰矇矇一片</strong>（環境溫度低，無明顯熱源）；假人因體溫（約 37°C）而呈現<strong>非常明顯的亮白色</strong>，與背景對比強烈。槍枝為冷金屬，幾乎不可見。<br>
+           <strong>特點：</strong>不受光線影響，煙霧中仍可使用。系統自動偵測人形並框選目標。`
+  }
+];
+
+function setMode(n) {
+  currentMode = n;
+  document.querySelectorAll('.mode-btn').forEach((b, i) => {
+    b.classList.toggle('active', i === n);
+  });
+  const info = infoData[n];
+  document.getElementById('infoTitle').textContent = info.title;
+  document.getElementById('infoText').innerHTML = info.text;
+  document.querySelector('#infoCard .dot').style.background = info.dot;
+}
+
+// 初始化
+setMode(0);
+draw();
+</script>
+</body>
+</html>
